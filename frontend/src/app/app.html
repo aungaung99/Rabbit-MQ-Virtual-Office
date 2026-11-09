@@ -1,0 +1,20 @@
+<div class="virtual-office-viewport">
+  <!-- Top Telemetry HUD -->
+  <app-hud></app-hud>
+
+  <!-- Interactive Phaser 3 Game Canvas -->
+  <div #gameContainer class="phaser-canvas-wrapper"></div>
+
+  <!-- Left Bottom Controls Toolbar -->
+  <app-toolbar></app-toolbar>
+
+  <!-- Right Inspector Card (when node selected) -->
+  <app-inspector-modal></app-inspector-modal>
+
+  <!-- Floating Camera Zoom Buttons -->
+  <div class="camera-floating-controls">
+    <button (click)="zoomIn()" title="Zoom In">+</button>
+    <button (click)="resetCamera()" title="Reset Camera">⌖</button>
+    <button (click)="zoomOut()" title="Zoom Out">−</button>
+  </div>
+</div>

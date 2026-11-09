@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  backend-build:
+    name: Build & Test Backend (.NET 10)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore backend/RabbitMqVirtualOffice.sln
+
+      - name: Build
+        run: dotnet build backend/RabbitMqVirtualOffice.sln --no-restore --configuration Release
+
+      - name: Test
+        run: dotnet test backend/RabbitMqVirtualOffice.sln --no-build --configuration Release --verbosity normal
+
+  frontend-build:
+    name: Build Frontend (Angular + Phaser)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        working-directory: ./frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: ./frontend
+        run: npm run build
