@@ -1,204 +1,363 @@
-import { Component, inject } from '@angular/core';
+import { Component, EventEmitter, Output, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { SimulationService } from '../../core/services/simulation.service';
+import { SimulationTrafficMode } from '../../core/models/broker.model';
 
 @Component({
   selector: 'app-hud',
   standalone: true,
   imports: [CommonModule],
   template: `
-    <header class="hud-topbar">
-      <!-- Title & Branding -->
-      <div class="brand">
-        <span class="logo-emoji">🐰</span>
-        <div class="brand-text">
-          <h1>RabbitMQ Virtual Office</h1>
-          <span class="sub-label">Interactive Real-Time Infrastructure Simulation</span>
+    <!-- Top Floating Bar -->
+    <header class="playground-topbar">
+      <!-- Left Brand Box -->
+      <div class="brand-card">
+        <div class="rmq-logo">
+          <svg viewBox="0 0 36 38" width="28" height="30">
+            <path d="M2,2 H14 V16 H20 V2 H32 V36 H2 Z" fill="#f97316"/>
+            <rect x="19" y="22" width="7" height="7" rx="1.5" fill="#1e293b"/>
+          </svg>
+        </div>
+        <div class="brand-titles">
+          <div class="title-row">
+            <h1>RabbitMQ</h1>
+            <span class="bunny-mini">🐰</span>
+          </div>
+          <span class="subtitle">Message Queue Playground</span>
         </div>
       </div>
 
-      <!-- Mode Badge -->
-      <div class="mode-badge-container">
-        <div class="mode-pill" [ngClass]="getModeClass()">
-          <span class="pulsing-dot"></span>
-          <span>{{ getModeLabel() }}</span>
-        </div>
-      </div>
+      <!-- Center Mode & Scenario Switcher Pill -->
+      <nav class="center-nav-pill">
+        <button
+          class="nav-pill-btn live-dot-btn"
+          [class.active]="simulation.mode() === 'DemoNormal'"
+          (click)="setMode('DemoNormal')">
+          <span class="green-dot"></span> Live Flow
+        </button>
+        <button
+          class="nav-pill-btn"
+          [class.active]="simulation.mode() === 'DemoQuiet'"
+          (click)="setMode('DemoQuiet')">
+          🌱 Quiet
+        </button>
+        <button
+          class="nav-pill-btn"
+          [class.active]="simulation.mode() === 'DemoSpike'"
+          (click)="setMode('DemoSpike')">
+          🔥 Spike
+        </button>
+        <button
+          class="nav-pill-btn"
+          [class.active]="simulation.mode() === 'DemoErrorSpike'"
+          (click)="setMode('DemoErrorSpike')">
+          🚨 DLQ Error
+        </button>
+        <button
+          class="nav-pill-btn broker-btn"
+          [class.active]="simulation.mode() === 'LiveMetrics'"
+          (click)="setMode('LiveMetrics')">
+          📡 Real Broker
+        </button>
+        <button class="nav-pill-btn send-btn" (click)="sendTestMsg()">
+          ✉️ +Publish
+        </button>
+      </nav>
 
-      <!-- Telemetry Stats Cards -->
-      <div class="stats-row">
-        <div class="stat-card">
-          <span class="stat-label">Publish Rate</span>
-          <span class="stat-value text-cyan">{{ simulation.snapshot().totalPublishRate }} <small>msg/s</small></span>
+      <!-- Right Speed & Playback Controls -->
+      <div class="right-controls">
+        <div class="speed-group">
+          <button
+            class="speed-btn"
+            [class.active]="simulation.simulationSpeed() === 0.5"
+            (click)="simulation.setSpeed(0.5)">
+            0.5x
+          </button>
+          <button
+            class="speed-btn"
+            [class.active]="simulation.simulationSpeed() === 1.0"
+            (click)="simulation.setSpeed(1.0)">
+            Speed 1x
+          </button>
+          <button
+            class="speed-btn"
+            [class.active]="simulation.simulationSpeed() === 2.0"
+            (click)="simulation.setSpeed(2.0)">
+            2x
+          </button>
         </div>
 
-        <div class="stat-card">
-          <span class="stat-label">Deliver Rate</span>
-          <span class="stat-value text-amber">{{ simulation.snapshot().totalDeliverRate }} <small>msg/s</small></span>
-        </div>
+        <button
+          class="icon-circle-btn"
+          [class.paused]="simulation.isPaused()"
+          (click)="simulation.togglePause()"
+          title="Pause / Resume">
+          {{ simulation.isPaused() ? '▶' : '⏸' }}
+        </button>
 
-        <div class="stat-card">
-          <span class="stat-label">ACK Rate</span>
-          <span class="stat-value text-emerald">{{ simulation.snapshot().totalAckRate }} <small>msg/s</small></span>
-        </div>
-
-        <div class="stat-card">
-          <span class="stat-label">Total Backlog</span>
-          <span class="stat-value" [ngClass]="getBacklogClass()">
-            {{ simulation.snapshot().totalBacklog }} <small>pkgs</small>
-          </span>
-        </div>
+        <button
+          class="icon-circle-btn"
+          (click)="resetCamera.emit()"
+          title="Fit & Center Camera">
+          ⛶
+        </button>
       </div>
     </header>
+
+    <!-- Top-Center Neon "Message Flow" Pipeline Diagram Card -->
+    <div class="message-flow-banner">
+      <div class="flow-title">Message Flow</div>
+      <div class="flow-steps">
+        <div class="flow-step">
+          <div class="step-icon orange-box">📦</div>
+          <span>Publisher</span>
+        </div>
+        <div class="flow-arrow">➔</div>
+        <div class="flow-step">
+          <div class="step-icon blue-circle">🔀</div>
+          <span>Exchange</span>
+        </div>
+        <div class="flow-arrow">➔</div>
+        <div class="flow-step">
+          <div class="step-icon stack-box">📚</div>
+          <span>Queue(s)</span>
+        </div>
+        <div class="flow-arrow">➔</div>
+        <div class="flow-step">
+          <div class="step-icon users-box">👥</div>
+          <span>Consumer(s)</span>
+        </div>
+      </div>
+    </div>
   `,
   styles: [`
-    .hud-topbar {
+    .playground-topbar {
+      position: absolute;
+      top: 12px;
+      left: 16px;
+      right: 16px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 12px 24px;
-      background: rgba(15, 23, 42, 0.88);
-      backdrop-filter: blur(8px);
-      border-bottom: 1px solid rgba(51, 65, 85, 0.6);
-      color: #f8fafc;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      z-index: 90;
+      pointer-events: none;
       user-select: none;
     }
 
-    .brand {
+    .brand-card, .center-nav-pill, .right-controls {
+      pointer-events: auto;
+    }
+
+    .brand-card {
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
+      background: rgba(15, 23, 42, 0.88);
+      backdrop-filter: blur(10px);
+      padding: 8px 16px;
+      border-radius: 12px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
     }
 
-    .logo-emoji {
-      font-size: 28px;
+    .title-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
     }
 
-    .brand-text h1 {
+    .brand-titles h1 {
       margin: 0;
-      font-size: 16px;
-      font-weight: 700;
+      font-size: 18px;
+      font-weight: 800;
+      color: #f8fafc;
       letter-spacing: -0.02em;
-      color: #f1f5f9;
     }
 
-    .sub-label {
+    .subtitle {
       font-size: 11px;
-      color: #94a3b8;
+      color: #cbd5e1;
+      display: block;
     }
 
-    .mode-pill {
+    .center-nav-pill {
       display: flex;
       align-items: center;
-      gap: 8px;
-      padding: 6px 14px;
+      gap: 6px;
+      background: rgba(15, 23, 42, 0.88);
+      backdrop-filter: blur(10px);
+      padding: 5px 8px;
+      border-radius: 9999px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+    }
+
+    .nav-pill-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: transparent;
+      border: 1px solid transparent;
+      color: #cbd5e1;
+      padding: 6px 13px;
       border-radius: 9999px;
       font-size: 12px;
       font-weight: 600;
-      letter-spacing: 0.02em;
+      cursor: pointer;
+      transition: all 0.15s ease;
     }
 
-    .mode-pill.normal {
-      background: rgba(16, 185, 129, 0.15);
-      color: #34d399;
-      border: 1px solid rgba(16, 185, 129, 0.35);
+    .nav-pill-btn:hover {
+      color: #ffffff;
+      background: rgba(51, 65, 85, 0.6);
     }
 
-    .mode-pill.spike {
-      background: rgba(245, 158, 11, 0.15);
-      color: #fbbf24;
-      border: 1px solid rgba(245, 158, 11, 0.35);
+    .nav-pill-btn.active {
+      background: rgba(16, 185, 129, 0.2);
+      border-color: rgba(16, 185, 129, 0.6);
+      color: #4ade80;
+      box-shadow: 0 0 12px rgba(16, 185, 129, 0.25);
     }
 
-    .mode-pill.error {
-      background: rgba(239, 68, 68, 0.15);
-      color: #f87171;
-      border: 1px solid rgba(239, 68, 68, 0.35);
+    .nav-pill-btn.send-btn {
+      background: rgba(249, 115, 22, 0.2);
+      border-color: rgba(249, 115, 22, 0.5);
+      color: #fb923c;
     }
 
-    .mode-pill.quiet {
-      background: rgba(56, 189, 248, 0.15);
-      color: #38bdf8;
-      border: 1px solid rgba(56, 189, 248, 0.35);
+    .nav-pill-btn.send-btn:hover {
+      background: #ea580c;
+      color: #ffffff;
     }
 
-    .pulsing-dot {
+    .green-dot {
       width: 8px;
       height: 8px;
       border-radius: 50%;
-      background: currentColor;
-      box-shadow: 0 0 8px currentColor;
+      background: #22c55e;
+      box-shadow: 0 0 8px #22c55e;
     }
 
-    .stats-row {
+    .right-controls {
       display: flex;
       align-items: center;
-      gap: 16px;
+      gap: 8px;
     }
 
-    .stat-card {
+    .speed-group {
       display: flex;
-      flex-direction: column;
-      align-items: flex-end;
-      background: rgba(30, 41, 59, 0.5);
-      padding: 4px 12px;
-      border-radius: 6px;
-      border: 1px solid rgba(51, 65, 85, 0.4);
+      background: rgba(15, 23, 42, 0.88);
+      backdrop-filter: blur(10px);
+      padding: 4px;
+      border-radius: 9999px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
     }
 
-    .stat-label {
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: #64748b;
+    .speed-btn {
+      background: transparent;
+      border: none;
+      color: #94a3b8;
+      padding: 5px 10px;
+      border-radius: 9999px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
     }
 
-    .stat-value {
+    .speed-btn.active {
+      background: #334155;
+      color: #f8fafc;
+    }
+
+    .icon-circle-btn {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      background: rgba(15, 23, 42, 0.88);
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      color: #f8fafc;
+      font-size: 14px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .icon-circle-btn.paused {
+      background: #e11d48;
+      border-color: #fb7185;
+    }
+
+    /* Top-Center Message Flow Neon Card */
+    .message-flow-banner {
+      position: absolute;
+      top: 68px;
+      left: 44%;
+      transform: translateX(-50%);
+      background: rgba(15, 23, 42, 0.9);
+      backdrop-filter: blur(12px);
+      border: 2px solid #3b82f6;
+      box-shadow: 0 0 20px rgba(59, 130, 246, 0.45), inset 0 0 12px rgba(59, 130, 246, 0.2);
+      border-radius: 14px;
+      padding: 10px 26px 14px;
+      z-index: 80;
+      pointer-events: none;
+      user-select: none;
+      text-align: center;
+    }
+
+    .flow-title {
       font-size: 14px;
       font-weight: 700;
-      font-family: monospace;
+      color: #f8fafc;
+      margin-bottom: 10px;
+      letter-spacing: 0.02em;
     }
 
-    .stat-value small {
-      font-size: 10px;
-      font-weight: normal;
-      color: #94a3b8;
+    .flow-steps {
+      display: flex;
+      align-items: center;
+      gap: 14px;
     }
 
-    .text-cyan { color: #38bdf8; }
-    .text-amber { color: #fbbf24; }
-    .text-emerald { color: #34d399; }
-    .text-red { color: #f87171; }
+    .flow-step {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #e2e8f0;
+    }
+
+    .step-icon {
+      width: 38px;
+      height: 38px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      background: rgba(30, 41, 59, 0.9);
+      border: 1px solid rgba(96, 165, 250, 0.4);
+    }
+
+    .flow-arrow {
+      color: #60a5fa;
+      font-size: 16px;
+      margin-top: -14px;
+    }
   `]
 })
 export class HudComponent {
   simulation = inject(SimulationService);
+  @Output() resetCamera = new EventEmitter<void>();
 
-  getModeLabel(): string {
-    const m = this.simulation.mode();
-    switch (m) {
-      case 'DemoQuiet': return 'Simulated Demo (Quiet)';
-      case 'DemoNormal': return 'Simulated Demo (Normal)';
-      case 'DemoSpike': return 'Simulated Demo (Traffic Spike)';
-      case 'DemoErrorSpike': return 'Simulated Demo (DLQ/Failure)';
-      case 'LiveMetrics': return 'Live RabbitMQ Broker';
-      default: return m;
-    }
+  setMode(mode: SimulationTrafficMode) {
+    this.simulation.setMode(mode);
   }
 
-  getModeClass(): string {
-    const m = this.simulation.mode();
-    if (m === 'DemoSpike') return 'spike';
-    if (m === 'DemoErrorSpike') return 'error';
-    if (m === 'DemoQuiet') return 'quiet';
-    return 'normal';
-  }
-
-  getBacklogClass(): string {
-    const backlog = this.simulation.snapshot().totalBacklog;
-    if (backlog > 80) return 'text-red';
-    if (backlog > 25) return 'text-amber';
-    return 'text-emerald';
+  async sendTestMsg() {
+    await this.simulation.injectTestMessage();
   }
 }

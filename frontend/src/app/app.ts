@@ -1,4 +1,4 @@
-import { Component, ElementRef, OnInit, OnDestroy, ViewChild, inject, effect } from '@angular/core';
+import { Component, ElementRef, OnInit, OnDestroy, ViewChild, inject, effect, NgZone } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import * as Phaser from 'phaser';
 import { OfficeScene } from './game/scenes/office.scene';
@@ -20,6 +20,7 @@ export class App implements OnInit, OnDestroy {
 
   simulation = inject(SimulationService);
   signalR = inject(SignalRService);
+  private ngZone = inject(NgZone);
 
   private phaserGame: Phaser.Game | null = null;
   private officeScene: OfficeScene | null = null;
@@ -46,7 +47,6 @@ export class App implements OnInit, OnDestroy {
 
   ngOnInit() {
     this.initPhaser();
-    // Attempt connecting to live backend SignalR hub
     this.signalR.connect('http://localhost:5000/hubs/monitoring');
   }
 
@@ -66,9 +66,7 @@ export class App implements OnInit, OnDestroy {
       parent: this.gameContainerRef.nativeElement,
       width: '100%',
       height: '100%',
-      backgroundColor: '#090d16',
-      pixelArt: true,
-      roundPixels: true,
+      backgroundColor: '#2a2232',
       scale: {
         mode: Phaser.Scale.RESIZE,
         autoCenter: Phaser.Scale.CENTER_BOTH
@@ -81,30 +79,20 @@ export class App implements OnInit, OnDestroy {
     this.phaserGame.events.once('ready', () => {
       this.officeScene?.init({
         snapshot: this.simulation.snapshot(),
-        onSelect: (entity) => this.simulation.setInspectedEntity(entity)
+        onSelect: (entity) => this.ngZone.run(() => this.simulation.setInspectedEntity(entity)),
+        onParcelEvent: (type, consumerIdx) =>
+          this.ngZone.run(() => this.simulation.recordParcelEvent(type, consumerIdx))
       });
     });
-  }
-
-  zoomIn() {
-    if (this.officeScene) {
-      const cam = this.officeScene.cameras.main;
-      cam.setZoom(Math.min(2.0, cam.zoom + 0.2));
-    }
-  }
-
-  zoomOut() {
-    if (this.officeScene) {
-      const cam = this.officeScene.cameras.main;
-      cam.setZoom(Math.max(0.6, cam.zoom - 0.2));
-    }
   }
 
   resetCamera() {
     if (this.officeScene) {
       const cam = this.officeScene.cameras.main;
-      cam.centerOn(500, 320);
-      cam.setZoom(1.0);
+      const zx = this.officeScene.scale.width / 1280;
+      const zy = this.officeScene.scale.height / 760;
+      cam.setZoom(Math.max(0.75, Math.min(zx, zy)));
+      cam.centerOn(640, 380);
     }
   }
 }

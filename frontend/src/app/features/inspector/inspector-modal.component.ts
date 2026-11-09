@@ -40,8 +40,8 @@ import { SimulationService } from '../../core/services/simulation.service';
     .inspector-card {
       position: absolute;
       top: 76px;
-      right: 24px;
-      width: 320px;
+      left: 16px;
+      width: 310px;
       background: rgba(15, 23, 42, 0.95);
       backdrop-filter: blur(12px);
       border-radius: 10px;

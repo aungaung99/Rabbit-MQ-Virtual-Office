@@ -1,20 +1,13 @@
 <div class="virtual-office-viewport">
-  <!-- Top Telemetry HUD -->
-  <app-hud></app-hud>
+  <!-- Top Playground Bar & Message Flow Banner -->
+  <app-hud (resetCamera)="resetCamera()"></app-hud>
 
-  <!-- Interactive Phaser 3 Game Canvas -->
+  <!-- Interactive Phaser 3 Cozy Office Game World -->
   <div #gameContainer class="phaser-canvas-wrapper"></div>
 
-  <!-- Left Bottom Controls Toolbar -->
+  <!-- Right Live Telemetry Sidebar, Live Events Log & Mascot Status Banner -->
   <app-toolbar></app-toolbar>
 
-  <!-- Right Inspector Card (when node selected) -->
+  <!-- Interactive Entity Inspector Card (when clicking any character/machine) -->
   <app-inspector-modal></app-inspector-modal>
-
-  <!-- Floating Camera Zoom Buttons -->
-  <div class="camera-floating-controls">
-    <button (click)="zoomIn()" title="Zoom In">+</button>
-    <button (click)="resetCamera()" title="Reset Camera">⌖</button>
-    <button (click)="zoomOut()" title="Zoom Out">−</button>
-  </div>
 </div>

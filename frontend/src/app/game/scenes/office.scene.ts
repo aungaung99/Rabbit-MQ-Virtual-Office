@@ -1,66 +1,130 @@
 import * as Phaser from 'phaser';
 import { BrokerSnapshot, InspectedEntity } from '../../core/models/broker.model';
 import { TrafficScaler } from '../systems/traffic-scaler';
+import { SpriteFactory } from '../systems/sprite-factory';
+
+interface ConsumerStation {
+  id: number;
+  x: number;
+  y: number;
+  beltEndX: number;
+  beltEndY: number;
+  active: boolean;
+  sprite?: Phaser.GameObjects.Image;
+  statusBg?: Phaser.GameObjects.Graphics;
+  statusDot?: Phaser.GameObjects.Arc;
+  statusSubText?: Phaser.GameObjects.Text;
+  heartBubble?: Phaser.GameObjects.Image;
+}
 
 export class OfficeScene extends Phaser.Scene {
   private snapshot!: BrokerSnapshot;
   private onEntitySelectCallback!: (entity: InspectedEntity | null) => void;
+  private onParcelEventCallback?: (type: 'publish' | 'route' | 'consume' | 'nack', consumerIdx?: number) => void;
   private speedMultiplier = 1.0;
   private isPaused = false;
+  private sceneReady = false;
 
-  // Station positions in isometric world coordinates
-  private publisherPos = { x: 200, y: 320 };
-  private exchangePos = { x: 380, y: 300 };
-  private queueShelfPos = { x: 560, y: 260 };
-  private consumerDesks: { x: number; y: number; active: boolean; workerSprite?: Phaser.GameObjects.Sprite }[] = [
-    { x: 740, y: 200, active: true },
-    { x: 760, y: 290, active: true },
-    { x: 740, y: 380, active: true },
+  // Key positions in 1280x760 world space
+  private publisherPos = { x: 120, y: 495 };
+  private exchangePos = { x: 375, y: 445 };
+  private queuePos = { x: 585, y: 435 };
+  private dlqPos = { x: 585, y: 615 };
+  private robotPos = { x: 365, y: 580 };
+  private catPos = { x: 945, y: 645 };
+
+  private consumers: ConsumerStation[] = [
+    { id: 1, x: 840, y: 345, beltEndX: 775, beltEndY: 365, active: true },
+    { id: 2, x: 855, y: 465, beltEndX: 790, beltEndY: 485, active: true },
+    { id: 3, x: 840, y: 585, beltEndX: 775, beltEndY: 600, active: true }
   ];
-  private dlqPos = { x: 580, y: 440 };
 
-  // Visual shelf parcels
-  private shelfParcels: Phaser.GameObjects.Image[] = [];
-  private shelfText!: Phaser.GameObjects.Text;
-  private dlqText!: Phaser.GameObjects.Text;
+  // Dynamic visual references
+  private publisherSprite!: Phaser.GameObjects.Image;
+  private exchangeSprite!: Phaser.GameObjects.Image;
+  private dlqSprite!: Phaser.GameObjects.Image;
+  private shelfEnvelopes: Phaser.GameObjects.Image[] = [];
+  private chevronSprites: { sprite: Phaser.GameObjects.Text; baseX: number; baseY: number; dx: number; dy: number }[] = [];
 
-  // Timers & counters
   private spawnTimer: Phaser.Time.TimerEvent | null = null;
   private activeParcelsCount = 0;
-  private maxActiveParcels = 35; // Strict performance budget
+  private maxActiveParcels = 30;
+  private typingToggle = false;
 
   constructor() {
     super({ key: 'OfficeScene' });
   }
 
-  init(data: { snapshot: BrokerSnapshot; onSelect: (e: InspectedEntity | null) => void }) {
+  init(data: {
+    snapshot: BrokerSnapshot;
+    onSelect: (e: InspectedEntity | null) => void;
+    onParcelEvent?: (type: 'publish' | 'route' | 'consume' | 'nack', consumerIdx?: number) => void;
+  }) {
     this.snapshot = data.snapshot;
     this.onEntitySelectCallback = data.onSelect;
+    this.onParcelEventCallback = data.onParcelEvent;
   }
 
-  preload() {
-    this.generatePixelArtTextures();
-  }
+  async create() {
+    // Generate crisp SVG sprites and wait until loaded into Phaser Texture Manager
+    await SpriteFactory.registerAllTextures(this);
 
-  create() {
-    // Background and Isometric Floor
-    this.createIsometricFloor();
+    // 1. Cozy Sunset Room Background
+    const bg = this.add.image(640, 380, 'office-bg').setDepth(0);
+    bg.setOrigin(0.5, 0.5);
 
-    // Conveyor Belts
-    this.createConveyors();
+    // 2. Animated Blue Tech Conveyor Belts
+    this.createConveyorBelts();
 
-    // Entities & Stations
+    // 3. Publisher Desk & Chibi Developer + Speech Callout
     this.createPublisherStation();
+
+    // 4. Exchange Sorting Machine
     this.createExchangeStation();
-    this.createQueueShelfStation();
+
+    // 5. Orange Queue Buffer Machine + Stacked Envelopes
+    this.createQueueStation();
+
+    // 6. Three Chibi Consumers at Desks + Status Pills
     this.createConsumerStations();
-    this.createDlqDepot();
 
-    // Setup Camera navigation
-    this.setupCameraControls();
+    // 7. Dead Letter Queue Bin
+    this.createDlqStation();
 
-    // Start Traffic Parcel Spawner
+    // 8. Robot Bunny Mascot & Sleeping Tabby Cat with Zzz
+    this.createMascotAndCat();
+
+    // 9. Camera & Zoom Setup
+    this.setupCamera();
+
+    this.sceneReady = true;
+    this.updateShelfVisuals();
     this.updateSpawnerRate();
+
+    // Subtle Publisher Typing & Beacon Animation Loop
+    this.time.addEvent({
+      delay: 350,
+      loop: true,
+      callback: () => {
+        if (this.isPaused) return;
+        this.typingToggle = !this.typingToggle;
+        if (this.publisherSprite) {
+          this.publisherSprite.setTexture(this.typingToggle ? 'publisher-desk-typing' : 'publisher-desk');
+        }
+        if (this.exchangeSprite) {
+          this.exchangeSprite.setTexture(this.typingToggle ? 'exchange-machine-active' : 'exchange-machine');
+        }
+      }
+    });
+  }
+
+  override update(time: number) {
+    if (!this.sceneReady || this.isPaused) return;
+    // Animate conveyor chevron arrows smoothly along belt direction
+    const shift = ((time * 0.03 * this.speedMultiplier) % 16);
+    for (const c of this.chevronSprites) {
+      c.sprite.setPosition(c.baseX + c.dx * shift, c.baseY + c.dy * shift);
+    }
   }
 
   updateSnapshot(snapshot: BrokerSnapshot, speed: number, paused: boolean) {
@@ -68,21 +132,355 @@ export class OfficeScene extends Phaser.Scene {
     this.speedMultiplier = speed;
     this.isPaused = paused;
 
-    // Update shelf visually
-    this.updateShelfVisuals();
+    if (!this.sceneReady) return;
 
-    // Update spawner timer rate
+    this.updateShelfVisuals();
     this.updateSpawnerRate();
 
-    // Update consumer activity states
-    if (this.snapshot.consumers) {
-      this.consumerDesks.forEach((desk, idx) => {
-        const c = this.snapshot.consumers[idx];
-        desk.active = c ? c.isActive : false;
-        if (desk.workerSprite) {
-          desk.workerSprite.setAlpha(desk.active ? 1.0 : 0.35);
+    // Update Consumer Active/Idle Visuals
+    this.consumers.forEach((c, idx) => {
+      const metric = this.snapshot.consumers[idx];
+      c.active = metric ? metric.isActive : true;
+      if (c.sprite) {
+        c.sprite.setTexture(c.active ? `consumer-${c.id}` : `consumer-${c.id}-idle`);
+      }
+      if (c.statusDot) {
+        c.statusDot.setFillStyle(c.active ? 0x22c55e : 0x94a3b8);
+      }
+      if (c.statusSubText) {
+        c.statusSubText.setText(c.active ? '(Processing...)' : '(Idle / Standby)');
+        c.statusSubText.setColor(c.active ? '#4ade80' : '#94a3b8');
+      }
+    });
+  }
+
+  private createConveyorBelts() {
+    const beltGfx = this.add.graphics().setDepth(2);
+
+    // Helper to draw a thick glowing blue conveyor track
+    const drawTrack = (points: { x: number; y: number }[]) => {
+      // Dark outer casing
+      beltGfx.lineStyle(28, 0x0f172a, 1);
+      beltGfx.beginPath();
+      beltGfx.moveTo(points[0].x, points[0].y);
+      for (let i = 1; i < points.length; i++) beltGfx.lineTo(points[i].x, points[i].y);
+      beltGfx.strokePath();
+
+      // Blue metallic belt body
+      beltGfx.lineStyle(20, 0x1e3a8a, 1);
+      beltGfx.beginPath();
+      beltGfx.moveTo(points[0].x, points[0].y);
+      for (let i = 1; i < points.length; i++) beltGfx.lineTo(points[i].x, points[i].y);
+      beltGfx.strokePath();
+
+      // Glowing cyan inner stripe
+      beltGfx.lineStyle(4, 0x38bdf8, 0.65);
+      beltGfx.beginPath();
+      beltGfx.moveTo(points[0].x, points[0].y);
+      for (let i = 1; i < points.length; i++) beltGfx.lineTo(points[i].x, points[i].y);
+      beltGfx.strokePath();
+    };
+
+    // Track 1: Publisher -> Exchange
+    drawTrack([
+      { x: 195, y: 515 },
+      { x: 315, y: 500 }
+    ]);
+    this.addBeltChevrons(210, 513, 290, 502, 3);
+
+    // Track 2: Exchange -> Queue
+    drawTrack([
+      { x: 440, y: 495 },
+      { x: 515, y: 490 }
+    ]);
+    this.addBeltChevrons(450, 494, 495, 491, 2);
+
+    // Track 3A: Queue -> Consumer #1 (Top branch)
+    drawTrack([
+      { x: 660, y: 435 },
+      { x: 720, y: 365 },
+      { x: 785, y: 365 }
+    ]);
+    this.addBeltChevrons(670, 425, 715, 370, 2);
+
+    // Track 3B: Queue -> Consumer #2 (Middle branch)
+    drawTrack([
+      { x: 660, y: 475 },
+      { x: 795, y: 485 }
+    ]);
+    this.addBeltChevrons(675, 476, 765, 483, 3);
+
+    // Track 3C: Queue -> Consumer #3 (Bottom branch)
+    drawTrack([
+      { x: 660, y: 510 },
+      { x: 720, y: 595 },
+      { x: 785, y: 595 }
+    ]);
+    this.addBeltChevrons(670, 520, 715, 585, 2);
+  }
+
+  private addBeltChevrons(x1: number, y1: number, x2: number, y2: number, count: number) {
+    const dist = Math.hypot(x2 - x1, y2 - y1);
+    const dx = (x2 - x1) / dist;
+    const dy = (y2 - y1) / dist;
+
+    for (let i = 0; i < count; i++) {
+      const t = i / count;
+      const bx = x1 + (x2 - x1) * t;
+      const by = y1 + (y2 - y1) * t;
+      const txt = this.add.text(bx, by, '»', {
+        fontFamily: 'sans-serif',
+        fontSize: '16px',
+        fontStyle: 'bold',
+        color: '#60a5fa'
+      }).setOrigin(0.5).setDepth(3);
+      this.chevronSprites.push({ sprite: txt, baseX: bx, baseY: by, dx, dy });
+    }
+  }
+
+  private createPublisherStation() {
+    this.publisherSprite = this.add.image(this.publisherPos.x, this.publisherPos.y, 'publisher-desk')
+      .setDepth(10)
+      .setInteractive({ useHandCursor: true });
+
+    // Floating Speech Callout ("Publisher (Publish Message)")
+    const calloutX = this.publisherPos.x - 5;
+    const calloutY = this.publisherPos.y - 125;
+    const bubbleGfx = this.add.graphics().setDepth(12);
+    bubbleGfx.fillStyle(0x1e293b, 0.92);
+    bubbleGfx.lineStyle(2, 0x60a5fa, 0.9);
+    bubbleGfx.fillRoundedRect(calloutX - 78, calloutY - 26, 156, 52, 12);
+    bubbleGfx.strokeRoundedRect(calloutX - 78, calloutY - 26, 156, 52, 12);
+
+    this.add.text(calloutX + 8, calloutY - 9, 'Publisher', {
+      fontFamily: 'sans-serif',
+      fontSize: '15px',
+      fontStyle: 'bold',
+      color: '#ffffff'
+    }).setOrigin(0.5).setDepth(13);
+
+    this.add.text(calloutX, calloutY + 11, '(Publish Message)', {
+      fontFamily: 'sans-serif',
+      fontSize: '11px',
+      color: '#cbd5e1'
+    }).setOrigin(0.5).setDepth(13);
+
+    this.add.text(calloutX - 54, calloutY - 8, '✈️', {
+      fontSize: '16px'
+    }).setOrigin(0.5).setDepth(13);
+
+    this.publisherSprite.on('pointerdown', () => {
+      this.onEntitySelectCallback({
+        type: 'publisher',
+        title: 'Publisher (Order Service Producer)',
+        data: {
+          'Role': 'Message Producer',
+          'Publish Rate': `${this.snapshot.totalPublishRate} msg/s`,
+          'Target Exchange': 'orders (topic)',
+          'Routing Key': 'orders.new',
+          'Delivery Mode': '2 (Persistent)'
         }
       });
+    });
+  }
+
+  private createExchangeStation() {
+    this.exchangeSprite = this.add.image(this.exchangePos.x, this.exchangePos.y, 'exchange-machine')
+      .setDepth(10)
+      .setInteractive({ useHandCursor: true });
+
+    this.exchangeSprite.on('pointerdown', () => {
+      this.onEntitySelectCallback({
+        type: 'exchange',
+        title: 'Exchange: orders (direct / topic / fanout)',
+        data: {
+          'Exchange Name': 'orders',
+          'Exchange Type': 'topic',
+          'Inbound Rate': `${this.snapshot.totalPublishRate} msg/s`,
+          'Routed Out Rate': `${this.snapshot.totalDeliverRate} msg/s`,
+          'Bound Queue': 'orders.queue',
+          'Status': 'Active Routing'
+        }
+      });
+    });
+  }
+
+  private createQueueStation() {
+    const qSprite = this.add.image(this.queuePos.x, this.queuePos.y, 'queue-machine')
+      .setDepth(10)
+      .setInteractive({ useHandCursor: true });
+
+    qSprite.on('pointerdown', () => {
+      const q = this.snapshot.queues[0];
+      this.onEntitySelectCallback({
+        type: 'queue',
+        title: `Queue: ${q?.name || 'orders.queue'}`,
+        data: {
+          'Queue Name': q?.name || 'orders.queue',
+          'In Queue (Backlog)': this.snapshot.totalBacklog,
+          'Unacknowledged': q?.messagesUnacknowledged ?? 4,
+          'Publish Rate': `${this.snapshot.totalPublishRate} msg/s`,
+          'Consume Rate': `${this.snapshot.totalAckRate} msg/s`,
+          'Active Consumers': this.consumers.filter(c => c.active).length,
+          'Dead Letter Exchange': 'orders.dlx'
+        }
+      });
+    });
+  }
+
+  private createConsumerStations() {
+    this.consumers.forEach((c) => {
+      c.sprite = this.add.image(c.x, c.y, `consumer-${c.id}`)
+        .setDepth(10)
+        .setInteractive({ useHandCursor: true });
+
+      // Status Pill to the right of each Consumer matching screenshot
+      const pillX = c.x + 128;
+      const pillY = c.y - 6;
+      c.statusBg = this.add.graphics().setDepth(11);
+      c.statusBg.fillStyle(0x0f172a, 0.88);
+      c.statusBg.lineStyle(1.5, 0x22c55e, 0.8);
+      c.statusBg.fillRoundedRect(pillX - 68, pillY - 22, 136, 42, 10);
+      c.statusBg.strokeRoundedRect(pillX - 68, pillY - 22, 136, 42, 10);
+
+      c.statusDot = this.add.circle(pillX - 52, pillY - 7, 5, 0x22c55e).setDepth(12);
+
+      this.add.text(pillX + 6, pillY - 7, `Consumer #${c.id}`, {
+        fontFamily: 'sans-serif',
+        fontSize: '12px',
+        fontStyle: 'bold',
+        color: '#f8fafc'
+      }).setOrigin(0.5).setDepth(12);
+
+      c.statusSubText = this.add.text(pillX, pillY + 9, '(Processing...)', {
+        fontFamily: 'sans-serif',
+        fontSize: '10px',
+        color: '#4ade80'
+      }).setOrigin(0.5).setDepth(12);
+
+      // Cute floating heart bubble above Consumer #1
+      if (c.id === 1) {
+        c.heartBubble = this.add.image(c.x + 38, c.y - 65, 'heart-bubble').setDepth(15);
+        this.tweens.add({
+          targets: c.heartBubble,
+          y: c.y - 73,
+          duration: 1200,
+          yoyo: true,
+          repeat: -1,
+          ease: 'Sine.easeInOut'
+        });
+      }
+
+      c.sprite.on('pointerdown', () => {
+        this.onEntitySelectCallback({
+          type: 'consumer',
+          title: `Consumer #${c.id} Worker Station`,
+          data: {
+            'Consumer Tag': `consumer-worker-${c.id}`,
+            'Bound Queue': 'orders.queue',
+            'Status': c.active ? 'Processing Messages (Active)' : 'Idle / Standby',
+            'Prefetch Count': 10,
+            'ACK Mode': 'Auto / Correlated'
+          }
+        });
+      });
+    });
+  }
+
+  private createDlqStation() {
+    this.dlqSprite = this.add.image(this.dlqPos.x, this.dlqPos.y, 'dlq-bin')
+      .setDepth(9)
+      .setScale(0.85)
+      .setInteractive({ useHandCursor: true });
+
+    this.dlqSprite.on('pointerdown', () => {
+      const dlq = this.snapshot.queues.find(q => q.name.includes('dlq'));
+      this.onEntitySelectCallback({
+        type: 'dlq',
+        title: 'Dead Letter Queue (orders.dlq)',
+        data: {
+          'Queue Name': 'orders.dlq',
+          'Failed Messages': dlq?.messagesTotal ?? 0,
+          'Rejection Reason': 'NACK / Retry Exhausted',
+          'Status': (dlq?.messagesTotal ?? 0) > 0 ? 'Attention Needed' : 'Clean (0 Failed)'
+        }
+      });
+    });
+  }
+
+  private createMascotAndCat() {
+    // Cute White Robot Bunny Mascot
+    const robot = this.add.image(this.robotPos.x, this.robotPos.y, 'robot-bunny')
+      .setDepth(18)
+      .setInteractive({ useHandCursor: true });
+
+    this.tweens.add({
+      targets: robot,
+      y: this.robotPos.y - 5,
+      duration: 1400,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut'
+    });
+
+    robot.on('pointerdown', () => {
+      this.onEntitySelectCallback({
+        type: 'mascot',
+        title: 'BunBot v2.1 (Office Telemetry Assistant)',
+        data: {
+          'Broker': this.snapshot.brokerVersion,
+          'Pipeline Health': this.snapshot.mode === 'DemoErrorSpike' ? 'Degraded (High NACKs)' : 'Optimal (100% Flowing)',
+          'Active Workers': `${this.consumers.filter(c => c.active).length} / 3`,
+          'Queue Backlog': `${this.snapshot.totalBacklog} messages`
+        }
+      });
+    });
+
+    // Sleeping Tabby Cat on Cushion
+    this.add.image(this.catPos.x, this.catPos.y, 'sleeping-cat').setDepth(14);
+
+    // Animated Floating "Zzz" above the sleeping cat
+    const zzz = this.add.text(this.catPos.x + 18, this.catPos.y - 28, 'Zzz', {
+      fontFamily: 'sans-serif',
+      fontSize: '14px',
+      fontStyle: 'bold',
+      color: '#fde68a',
+      stroke: '#451a03',
+      strokeThickness: 3
+    }).setOrigin(0.5).setDepth(15);
+
+    this.tweens.add({
+      targets: zzz,
+      y: this.catPos.y - 42,
+      alpha: 0.35,
+      scale: 1.15,
+      duration: 1800,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut'
+    });
+  }
+
+  private updateShelfVisuals() {
+    const backlog = this.snapshot ? this.snapshot.totalBacklog : 16;
+    // Map backlog to 0..8 visible envelopes inside the 2 shelves of the Queue machine
+    const slots = Math.min(8, Math.max(1, Math.ceil(backlog / 6)));
+
+    while (this.shelfEnvelopes.length > slots) {
+      const env = this.shelfEnvelopes.pop();
+      env?.destroy();
+    }
+
+    while (this.shelfEnvelopes.length < slots) {
+      const idx = this.shelfEnvelopes.length;
+      const col = idx % 4;
+      const row = Math.floor(idx / 4);
+      // Positioned neatly inside the two dark shelf cavities of Queue machine
+      const ex = this.queuePos.x - 45 + col * 30;
+      const ey = this.queuePos.y + 5 + row * 42;
+
+      const env = this.add.image(ex, ey, 'envelope-gold').setDepth(12).setScale(0.76);
+      this.shelfEnvelopes.push(env);
     }
   }
 
@@ -94,121 +492,105 @@ export class OfficeScene extends Phaser.Scene {
 
     if (this.isPaused) return;
 
-    const rate = this.snapshot ? this.snapshot.totalPublishRate : 15;
+    const rate = this.snapshot ? this.snapshot.totalPublishRate : 32;
     const spawnsPerSec = TrafficScaler.getSpawnRatePerSecond(rate, this.speedMultiplier);
-    const intervalMs = Math.max(120, 1000 / spawnsPerSec);
+    const intervalMs = Math.max(180, 1000 / spawnsPerSec);
 
     this.spawnTimer = this.time.addEvent({
       delay: intervalMs,
-      callback: this.spawnParcelCycle,
+      callback: this.spawnEnvelopeJourney,
       callbackScope: this,
       loop: true
     });
   }
 
   /**
-   * Complete journey of a single parcel:
-   * Publisher -> Conveyor -> Exchange Sorter -> Conveyor -> Queue Shelf -> Consumer Desk -> ACK / DLQ
+   * Spawns a golden message envelope at the Publisher desk, glides along the blue conveyor
+   * through the Exchange machine, into the Queue buffer, and branches out to one of the 3 Consumers!
    */
-  private spawnParcelCycle() {
-    if (this.isPaused || this.activeParcelsCount >= this.maxActiveParcels) return;
+  private spawnEnvelopeJourney() {
+    if (!this.sceneReady || this.isPaused || this.activeParcelsCount >= this.maxActiveParcels) return;
 
     this.activeParcelsCount++;
     const isErrorMode = this.snapshot.mode === 'DemoErrorSpike';
-    const isDlqParcel = isErrorMode ? Math.random() < 0.65 : Math.random() < 0.05;
+    const isNack = isErrorMode ? Math.random() < 0.6 : false;
 
-    // Spawn parcel at Publisher
-    const parcel = this.add.image(this.publisherPos.x + 20, this.publisherPos.y - 10, isDlqParcel ? 'parcel-dlq' : 'parcel');
-    parcel.setDepth(15);
-    parcel.setScale(0);
+    const env = this.add.image(205, 505, isNack ? 'envelope-dlq' : 'envelope-gold')
+      .setDepth(14)
+      .setScale(0.2);
 
-    // Initial pop-in animation
+    this.onParcelEventCallback?.('publish');
+
+    // Pop onto Conveyor 1
     this.tweens.add({
-      targets: parcel,
-      scale: 1,
-      duration: 200,
+      targets: env,
+      scale: 0.92,
+      duration: 140,
       onComplete: () => {
-        // Step 1: Move from Publisher to Exchange Sorter
-        const duration1 = 700 / this.speedMultiplier;
+        // 1. Glide along Conveyor 1 into Exchange Machine
         this.tweens.add({
-          targets: parcel,
-          x: this.exchangePos.x,
-          y: this.exchangePos.y - 15,
-          duration: duration1,
+          targets: env,
+          x: 320,
+          y: 492,
+          duration: 620 / this.speedMultiplier,
           ease: 'Linear',
           onComplete: () => {
-            // Pulse at Exchange
+            this.onParcelEventCallback?.('route');
+            // Pass through Exchange to Conveyor 2
+            env.setPosition(442, 488);
             this.tweens.add({
-              targets: parcel,
-              scale: 1.25,
-              yoyo: true,
-              duration: 150 / this.speedMultiplier,
+              targets: env,
+              x: 520,
+              y: 484,
+              duration: 420 / this.speedMultiplier,
+              ease: 'Linear',
               onComplete: () => {
-                // Step 2: Move from Exchange to Queue Shelf
-                const duration2 = 800 / this.speedMultiplier;
-                this.tweens.add({
-                  targets: parcel,
-                  x: this.queueShelfPos.x - 20,
-                  y: this.queueShelfPos.y + 10,
-                  duration: duration2,
-                  ease: 'Linear',
-                  onComplete: () => {
-                    // Temporarily absorbed into shelf
-                    parcel.setVisible(false);
+                // Briefly buffer inside Queue
+                env.setVisible(false);
+                const activeConsumers = this.consumers.filter(c => c.active);
+                if (activeConsumers.length === 0) {
+                  this.cleanupEnvelope(env);
+                  return;
+                }
 
-                    // Step 3: Pick up by an available Consumer
-                    const availableDesks = this.consumerDesks.filter(d => d.active);
-                    if (availableDesks.length === 0) {
-                      // No consumers! Parcel remains or drops
-                      this.destroyParcel(parcel);
-                      return;
+                const chosen = activeConsumers[Math.floor(Math.random() * activeConsumers.length)];
+                const waitMs = (220 + Math.random() * 250) / this.speedMultiplier;
+
+                this.time.delayedCall(waitMs, () => {
+                  if (!env.active) return;
+                  const startY = chosen.id === 1 ? 430 : chosen.id === 2 ? 470 : 505;
+                  env.setPosition(662, startY);
+                  env.setVisible(true);
+
+                  // Move along branching track to Consumer desk
+                  this.tweens.add({
+                    targets: env,
+                    x: chosen.beltEndX,
+                    y: chosen.beltEndY - 8,
+                    duration: 580 / this.speedMultiplier,
+                    ease: 'Sine.easeInOut',
+                    onComplete: () => {
+                      if (!env.active) return;
+                      if (isNack) {
+                        this.showFeedbackBadge(chosen.x, chosen.y - 45, 'nack-badge');
+                        this.onParcelEventCallback?.('nack', chosen.id);
+                        // Divert to DLQ bin
+                        this.tweens.add({
+                          targets: env,
+                          x: this.dlqPos.x,
+                          y: this.dlqPos.y - 10,
+                          scale: 0.5,
+                          duration: 500 / this.speedMultiplier,
+                          ease: 'Back.easeIn',
+                          onComplete: () => this.cleanupEnvelope(env)
+                        });
+                      } else {
+                        this.showFeedbackBadge(chosen.x - 10, chosen.y - 45, 'ack-badge');
+                        this.onParcelEventCallback?.('consume', chosen.id);
+                        this.cleanupEnvelope(env);
+                      }
                     }
-
-                    const targetDesk = availableDesks[Math.floor(Math.random() * availableDesks.length)];
-                    const shelfWait = (300 + Math.random() * 400) / this.speedMultiplier;
-
-                    this.time.delayedCall(shelfWait, () => {
-                      if (!parcel.active) return;
-                      parcel.setPosition(this.queueShelfPos.x + 10, this.queueShelfPos.y);
-                      parcel.setVisible(true);
-
-                      const duration3 = 600 / this.speedMultiplier;
-                      this.tweens.add({
-                        targets: parcel,
-                        x: targetDesk.x - 15,
-                        y: targetDesk.y - 10,
-                        duration: duration3,
-                        ease: 'Linear',
-                        onComplete: () => {
-                          // Consumer processing time
-                          const processTime = (400 + Math.random() * 300) / this.speedMultiplier;
-                          this.time.delayedCall(processTime, () => {
-                            if (!parcel.active) return;
-
-                            if (isDlqParcel) {
-                              // NACK -> Divert to Dead Letter Queue
-                              this.triggerNackAnimation(targetDesk.x, targetDesk.y);
-                              this.tweens.add({
-                                targets: parcel,
-                                x: this.dlqPos.x,
-                                y: this.dlqPos.y - 10,
-                                duration: 600 / this.speedMultiplier,
-                                ease: 'Cubic.easeIn',
-                                onComplete: () => {
-                                  this.triggerDlqBurst(this.dlqPos.x, this.dlqPos.y);
-                                  this.destroyParcel(parcel);
-                                }
-                              });
-                            } else {
-                              // Successful ACK!
-                              this.triggerAckCelebration(targetDesk.x - 15, targetDesk.y - 15);
-                              this.destroyParcel(parcel);
-                            }
-                          });
-                        }
-                      });
-                    });
-                  }
+                  });
                 });
               }
             });
@@ -218,325 +600,40 @@ export class OfficeScene extends Phaser.Scene {
     });
   }
 
-  private destroyParcel(parcel: Phaser.GameObjects.Image) {
+  private showFeedbackBadge(x: number, y: number, texture: string) {
+    const badge = this.add.image(x, y, texture).setDepth(25).setScale(0.75);
     this.tweens.add({
-      targets: parcel,
+      targets: badge,
+      y: y - 24,
       alpha: 0,
-      scale: 0.5,
-      duration: 150,
-      onComplete: () => {
-        parcel.destroy();
-        this.activeParcelsCount = Math.max(0, this.activeParcelsCount - 1);
-      }
-    });
-  }
-
-  private triggerAckCelebration(x: number, y: number) {
-    for (let i = 0; i < 4; i++) {
-      const sparkle = this.add.image(x, y, 'ack-sparkle');
-      sparkle.setDepth(25);
-      const angle = (Math.PI * 2 * i) / 4 + Math.random() * 0.5;
-      const dist = 16 + Math.random() * 12;
-
-      this.tweens.add({
-        targets: sparkle,
-        x: x + Math.cos(angle) * dist,
-        y: y + Math.sin(angle) * dist,
-        alpha: 0,
-        scale: 0.2,
-        duration: 400 / this.speedMultiplier,
-        ease: 'Quad.easeOut',
-        onComplete: () => sparkle.destroy()
-      });
-    }
-  }
-
-  private triggerNackAnimation(x: number, y: number) {
-    const alertIcon = this.add.text(x - 2, y - 30, '⚠️ NACK', {
-      fontFamily: 'monospace',
-      fontSize: '11px',
-      color: '#f87171',
-      backgroundColor: '#7f1d1d',
-      padding: { x: 4, y: 2 }
-    }).setOrigin(0.5).setDepth(30);
-
-    this.tweens.add({
-      targets: alertIcon,
-      y: y - 48,
-      alpha: 0,
-      duration: 800 / this.speedMultiplier,
+      duration: 650 / this.speedMultiplier,
       ease: 'Quad.easeOut',
-      onComplete: () => alertIcon.destroy()
+      onComplete: () => badge.destroy()
     });
   }
 
-  private triggerDlqBurst(x: number, y: number) {
-    const flash = this.add.circle(x, y - 10, 16, 0xef4444, 0.6).setDepth(20);
-    this.tweens.add({
-      targets: flash,
-      radius: 28,
-      alpha: 0,
-      duration: 350,
-      onComplete: () => flash.destroy()
-    });
+  private cleanupEnvelope(env: Phaser.GameObjects.Image) {
+    env.destroy();
+    this.activeParcelsCount = Math.max(0, this.activeParcelsCount - 1);
   }
 
-  private updateShelfVisuals() {
-    const backlog = this.snapshot ? this.snapshot.totalBacklog : 8;
-    const visualCount = TrafficScaler.getVisualShelfCount(backlog);
-
-    // Clean up excess shelf parcels
-    while (this.shelfParcels.length > visualCount) {
-      const p = this.shelfParcels.pop();
-      p?.destroy();
-    }
-
-    // Add missing shelf parcels in an isometric stack
-    while (this.shelfParcels.length < visualCount) {
-      const idx = this.shelfParcels.length;
-      const col = idx % 4;
-      const row = Math.floor(idx / 4);
-      const px = this.queueShelfPos.x - 18 + col * 9;
-      const py = this.queueShelfPos.y - 12 - row * 8;
-
-      const p = this.add.image(px, py, 'parcel').setDepth(10 + row);
-      p.setScale(0.9);
-      this.shelfParcels.push(p);
-    }
-
-    // Update shelf label
-    if (this.shelfText) {
-      this.shelfText.setText(`Backlog: ${backlog}`);
-      this.shelfText.setColor(backlog > 50 ? '#f87171' : backlog > 20 ? '#fbbf24' : '#34d399');
-    }
-
-    // Update DLQ label
-    if (this.dlqText && this.snapshot) {
-      const dlqQueue = this.snapshot.queues.find(q => q.name.includes('dlq'));
-      const count = dlqQueue ? dlqQueue.messagesTotal : 0;
-      this.dlqText.setText(`DLQ: ${count}`);
-    }
-  }
-
-  private createIsometricFloor() {
-    const cols = 15;
-    const rows = 12;
-    const startX = 480;
-    const startY = 100;
-    const tileW = 64;
-    const tileH = 32;
-
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const isoX = startX + (c - r) * (tileW / 2);
-        const isoY = startY + (c + r) * (tileH / 2);
-
-        const isBorder = r === 0 || c === 0 || r === rows - 1 || c === cols - 1;
-        const isCarpet = (r >= 3 && r <= 8 && c >= 3 && c <= 10);
-        const texture = isCarpet ? 'iso-tile-wood' : 'iso-tile-floor';
-
-        const tile = this.add.image(isoX, isoY, texture);
-        tile.setDepth(0);
-        if (isBorder) tile.setAlpha(0.65);
-      }
-    }
-  }
-
-  private createConveyors() {
-    // Belt from Publisher to Exchange
-    this.createBeltLine(this.publisherPos.x, this.publisherPos.y, this.exchangePos.x, this.exchangePos.y);
-    // Belt from Exchange to Queue Shelf
-    this.createBeltLine(this.exchangePos.x, this.exchangePos.y, this.queueShelfPos.x, this.queueShelfPos.y);
-    // Belt from Queue Shelf to Consumers
-    this.consumerDesks.forEach(desk => {
-      this.createBeltLine(this.queueShelfPos.x, this.queueShelfPos.y, desk.x, desk.y);
-    });
-    // Belt from Consumers to DLQ
-    this.createBeltLine(this.consumerDesks[1].x, this.consumerDesks[1].y, this.dlqPos.x, this.dlqPos.y);
-  }
-
-  private createBeltLine(x1: number, y1: number, x2: number, y2: number) {
-    const steps = 6;
-    for (let i = 0; i <= steps; i++) {
-      const bx = x1 + (x2 - x1) * (i / steps);
-      const by = y1 + (y2 - y1) * (i / steps);
-      this.add.image(bx, by, 'conveyor-segment').setDepth(2).setAlpha(0.8);
-    }
-  }
-
-  private createPublisherStation() {
-    const desk = this.add.image(this.publisherPos.x, this.publisherPos.y, 'publisher-station')
-      .setDepth(5)
-      .setInteractive({ cursor: 'pointer' });
-
-    this.add.image(this.publisherPos.x - 12, this.publisherPos.y - 18, 'publisher-character')
-      .setDepth(6);
-
-    this.add.text(this.publisherPos.x, this.publisherPos.y + 24, 'Publisher (Dispatcher)', {
-      fontFamily: 'monospace',
-      fontSize: '10px',
-      color: '#38bdf8'
-    }).setOrigin(0.5).setDepth(15);
-
-    desk.on('pointerdown', () => {
-      this.onEntitySelectCallback({
-        type: 'publisher',
-        title: 'Message Publisher (Order Service Dispatcher)',
-        data: {
-          'Role': 'Client Service Publisher',
-          'Publish Rate': `${this.snapshot.totalPublishRate} msg/s`,
-          'Status': 'Healthy / Active',
-          'Exchange Target': 'amq.topic',
-          'Routing Key': 'orders.new'
-        }
-      });
-    });
-  }
-
-  private createExchangeStation() {
-    const sorter = this.add.image(this.exchangePos.x, this.exchangePos.y, 'exchange-sorter')
-      .setDepth(5)
-      .setInteractive({ cursor: 'pointer' });
-
-    this.add.text(this.exchangePos.x, this.exchangePos.y + 28, 'amq.topic (Sorter)', {
-      fontFamily: 'monospace',
-      fontSize: '10px',
-      color: '#fbbf24'
-    }).setOrigin(0.5).setDepth(15);
-
-    sorter.on('pointerdown', () => {
-      this.onEntitySelectCallback({
-        type: 'exchange',
-        title: 'Exchange (amq.topic)',
-        data: {
-          'Type': 'topic',
-          'Throughput In': `${this.snapshot.totalPublishRate} msg/s`,
-          'Throughput Out': `${this.snapshot.totalDeliverRate} msg/s`,
-          'Bound Queues': 'orders.checkout, notifications.push',
-          'Internal Routing': 'Direct Match'
-        }
-      });
-    });
-  }
-
-  private createQueueShelfStation() {
-    const shelf = this.add.image(this.queueShelfPos.x, this.queueShelfPos.y, 'queue-shelf')
-      .setDepth(5)
-      .setInteractive({ cursor: 'pointer' });
-
-    this.add.text(this.queueShelfPos.x, this.queueShelfPos.y + 36, 'Queue (orders.checkout)', {
-      fontFamily: 'monospace',
-      fontSize: '10px',
-      color: '#34d399'
-    }).setOrigin(0.5).setDepth(15);
-
-    this.shelfText = this.add.text(this.queueShelfPos.x, this.queueShelfPos.y + 48, 'Backlog: 8', {
-      fontFamily: 'monospace',
-      fontSize: '10px',
-      color: '#34d399'
-    }).setOrigin(0.5).setDepth(15);
-
-    shelf.on('pointerdown', () => {
-      const q = this.snapshot.queues.find(queue => queue.name.includes('orders')) || this.snapshot.queues[0];
-      this.onEntitySelectCallback({
-        type: 'queue',
-        title: `Queue: ${q.name}`,
-        data: {
-          'Messages Ready (Backlog)': q.messagesReady,
-          'Unacknowledged': q.messagesUnacknowledged,
-          'Total Depth': q.messagesTotal,
-          'Consumers Attached': q.consumersCount,
-          'Publish Rate': `${q.publishRate} msg/s`,
-          'Deliver Rate': `${q.deliverRate} msg/s`,
-          'ACK Rate': `${q.ackRate} msg/s`,
-          'DLQ Enabled': q.hasDeadLetterQueue ? 'Yes (orders.dlq)' : 'No'
-        }
-      });
-    });
-  }
-
-  private createConsumerStations() {
-    this.consumerDesks.forEach((desk, idx) => {
-      const deskImage = this.add.image(desk.x, desk.y, 'consumer-desk')
-        .setDepth(5)
-        .setInteractive({ cursor: 'pointer' });
-
-      desk.workerSprite = this.add.sprite(desk.x - 10, desk.y - 15, 'worker-character')
-        .setDepth(6);
-
-      this.add.text(desk.x, desk.y + 24, `Worker ${idx + 1}`, {
-        fontFamily: 'monospace',
-        fontSize: '10px',
-        color: '#818cf8'
-      }).setOrigin(0.5).setDepth(15);
-
-      deskImage.on('pointerdown', () => {
-        const c = this.snapshot.consumers[idx] || {
-          consumerTag: `worker-${idx + 1}`,
-          channelName: '127.0.0.1:54321',
-          prefetchCount: 10,
-          isActive: desk.active
-        };
-
-        this.onEntitySelectCallback({
-          type: 'consumer',
-          title: `Consumer Worker ${idx + 1}`,
-          data: {
-            'Consumer Tag': c.consumerTag,
-            'Channel': c.channelName,
-            'Prefetch Count': c.prefetchCount,
-            'State': desk.active ? 'Processing Messages' : 'Idle / Offline',
-            'Queue Listening': 'orders.checkout',
-            'Avg ACK Latency': '32 ms'
-          }
-        });
-      });
-    });
-  }
-
-  private createDlqDepot() {
-    const dlq = this.add.image(this.dlqPos.x, this.dlqPos.y, 'dlq-depot')
-      .setDepth(5)
-      .setInteractive({ cursor: 'pointer' });
-
-    this.add.text(this.dlqPos.x, this.dlqPos.y + 28, 'Dead Letter (DLQ)', {
-      fontFamily: 'monospace',
-      fontSize: '10px',
-      color: '#f87171'
-    }).setOrigin(0.5).setDepth(15);
-
-    this.dlqText = this.add.text(this.dlqPos.x, this.dlqPos.y + 40, 'DLQ: 0', {
-      fontFamily: 'monospace',
-      fontSize: '10px',
-      color: '#f87171'
-    }).setOrigin(0.5).setDepth(15);
-
-    dlq.on('pointerdown', () => {
-      const q = this.snapshot.queues.find(queue => queue.name.includes('dlq')) || {
-        name: 'orders.dlq',
-        messagesTotal: 0,
-        publishRate: 0
-      };
-
-      this.onEntitySelectCallback({
-        type: 'dlq',
-        title: 'Dead Letter Queue (orders.dlq)',
-        data: {
-          'Queue Name': q.name,
-          'Total Poison Messages': q.messagesTotal,
-          'NACK Arrival Rate': `${q.publishRate} msg/s`,
-          'Status': q.messagesTotal > 20 ? 'High Failure Count!' : 'Acceptable',
-          'Action': 'Inspection required on failed payloads'
-        }
-      });
-    });
-  }
-
-  private setupCameraControls() {
+  private setupCamera() {
     const cam = this.cameras.main;
-    cam.centerOn(500, 320);
+    cam.centerOn(640, 380);
 
-    // Pan with mouse drag
+    // Responsive auto-fit to viewport
+    const fitCamera = () => {
+      const zx = this.scale.width / 1280;
+      const zy = this.scale.height / 760;
+      const bestZoom = Math.max(0.75, Math.min(zx, zy));
+      cam.setZoom(bestZoom);
+      cam.centerOn(640, 380);
+    };
+
+    fitCamera();
+    this.scale.on('resize', fitCamera);
+
+    // Drag to pan
     this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
       if (pointer.isDown && pointer.button === 0) {
         cam.scrollX -= (pointer.x - pointer.prevPosition.x) / cam.zoom;
@@ -544,189 +641,10 @@ export class OfficeScene extends Phaser.Scene {
       }
     });
 
-    // Zoom with mouse wheel
-    this.input.on('wheel', (pointer: any, gameObjects: any, deltaX: number, deltaY: number) => {
-      const newZoom = Phaser.Math.Clamp(cam.zoom - deltaY * 0.001, 0.6, 2.0);
+    // Wheel to zoom
+    this.input.on('wheel', (_p: any, _go: any, _dx: number, deltaY: number) => {
+      const newZoom = Phaser.Math.Clamp(cam.zoom - deltaY * 0.0008, 0.6, 1.8);
       cam.setZoom(newZoom);
     });
-  }
-
-  /**
-   * Procedurally paints crisp retro isometric pixel-art textures
-   * onto Phaser canvas textures. Zero external network dependency!
-   */
-  private generatePixelArtTextures() {
-    // 1. Isometric Floor Tile (64x32)
-    const floorGfx = this.make.graphics({ x: 0, y: 0 });
-    floorGfx.fillStyle(0x1e293b, 1);
-    floorGfx.beginPath();
-    floorGfx.moveTo(32, 0);
-    floorGfx.lineTo(64, 16);
-    floorGfx.lineTo(32, 32);
-    floorGfx.lineTo(0, 16);
-    floorGfx.closePath();
-    floorGfx.fillPath();
-    floorGfx.lineStyle(1, 0x334155, 0.8);
-    floorGfx.strokePath();
-    floorGfx.generateTexture('iso-tile-floor', 64, 32);
-    floorGfx.destroy();
-
-    // 2. Isometric Wood Tile (64x32)
-    const woodGfx = this.make.graphics({ x: 0, y: 0 });
-    woodGfx.fillStyle(0x27272a, 1);
-    woodGfx.beginPath();
-    woodGfx.moveTo(32, 0);
-    woodGfx.lineTo(64, 16);
-    woodGfx.lineTo(32, 32);
-    woodGfx.lineTo(0, 16);
-    woodGfx.closePath();
-    woodGfx.fillPath();
-    woodGfx.lineStyle(1, 0x3f3f46, 0.9);
-    woodGfx.strokePath();
-    woodGfx.generateTexture('iso-tile-wood', 64, 32);
-    woodGfx.destroy();
-
-    // 3. Conveyor Segment (16x12)
-    const convGfx = this.make.graphics({ x: 0, y: 0 });
-    convGfx.fillStyle(0x475569, 1);
-    convGfx.fillRect(2, 2, 12, 8);
-    convGfx.fillStyle(0x0284c7, 0.8);
-    convGfx.fillRect(4, 4, 8, 4);
-    convGfx.generateTexture('conveyor-segment', 16, 12);
-    convGfx.destroy();
-
-    // 4. Publisher Station (48x44)
-    const pubGfx = this.make.graphics({ x: 0, y: 0 });
-    pubGfx.fillStyle(0x0f172a, 1);
-    pubGfx.fillRect(4, 14, 40, 26);
-    pubGfx.fillStyle(0x0284c7, 1);
-    pubGfx.fillRect(8, 16, 32, 6);
-    // Monitor
-    pubGfx.fillStyle(0x38bdf8, 1);
-    pubGfx.fillRect(16, 2, 16, 12);
-    pubGfx.fillStyle(0x0369a1, 1);
-    pubGfx.fillRect(22, 14, 4, 4);
-    pubGfx.generateTexture('publisher-station', 48, 44);
-    pubGfx.destroy();
-
-    // 5. Publisher Character (16x24)
-    const pubCharGfx = this.make.graphics({ x: 0, y: 0 });
-    // Head
-    pubCharGfx.fillStyle(0xfbcfe8, 1);
-    pubCharGfx.fillRect(4, 2, 8, 8);
-    // Hair
-    pubCharGfx.fillStyle(0x854d0e, 1);
-    pubCharGfx.fillRect(3, 0, 10, 4);
-    // Shirt (Cyan)
-    pubCharGfx.fillStyle(0x06b6d4, 1);
-    pubCharGfx.fillRect(3, 10, 10, 10);
-    // Tie
-    pubCharGfx.fillStyle(0x0284c7, 1);
-    pubCharGfx.fillRect(7, 11, 2, 6);
-    pubCharGfx.generateTexture('publisher-character', 16, 24);
-    pubCharGfx.destroy();
-
-    // 6. Exchange Sorter (52x48)
-    const exGfx = this.make.graphics({ x: 0, y: 0 });
-    exGfx.fillStyle(0x78350f, 1);
-    exGfx.fillRect(4, 12, 44, 32);
-    exGfx.fillStyle(0xf59e0b, 1);
-    exGfx.fillRect(8, 16, 36, 10);
-    // Sorting gears & indicator lights
-    exGfx.fillStyle(0xfef08a, 1);
-    exGfx.fillCircle(16, 8, 4);
-    exGfx.fillCircle(36, 8, 4);
-    exGfx.fillStyle(0xd97706, 1);
-    exGfx.fillRect(20, 4, 12, 8);
-    exGfx.generateTexture('exchange-sorter', 52, 48);
-    exGfx.destroy();
-
-    // 7. Queue Shelf (54x56)
-    const shelfGfx = this.make.graphics({ x: 0, y: 0 });
-    shelfGfx.fillStyle(0x064e3b, 1);
-    // Shelf metal legs
-    shelfGfx.fillRect(4, 6, 4, 46);
-    shelfGfx.fillRect(46, 6, 4, 46);
-    // Horizontal racks
-    shelfGfx.fillStyle(0x059669, 1);
-    shelfGfx.fillRect(4, 16, 46, 4);
-    shelfGfx.fillRect(4, 30, 46, 4);
-    shelfGfx.fillRect(4, 44, 46, 4);
-    shelfGfx.generateTexture('queue-shelf', 54, 56);
-    shelfGfx.destroy();
-
-    // 8. Consumer Desk (48x44)
-    const conDeskGfx = this.make.graphics({ x: 0, y: 0 });
-    conDeskGfx.fillStyle(0x1e1b4b, 1);
-    conDeskGfx.fillRect(4, 14, 40, 26);
-    conDeskGfx.fillStyle(0x4338ca, 1);
-    conDeskGfx.fillRect(8, 16, 32, 6);
-    // Dual monitors
-    conDeskGfx.fillStyle(0x818cf8, 1);
-    conDeskGfx.fillRect(10, 2, 13, 10);
-    conDeskGfx.fillRect(25, 2, 13, 10);
-    // Coffee cup
-    conDeskGfx.fillStyle(0xf8fafc, 1);
-    conDeskGfx.fillRect(40, 18, 4, 5);
-    conDeskGfx.generateTexture('consumer-desk', 48, 44);
-    conDeskGfx.destroy();
-
-    // 9. Worker Character (16x24)
-    const workerGfx = this.make.graphics({ x: 0, y: 0 });
-    // Head
-    workerGfx.fillStyle(0xfde68a, 1);
-    workerGfx.fillRect(4, 2, 8, 8);
-    // Hair
-    workerGfx.fillStyle(0x18181b, 1);
-    workerGfx.fillRect(3, 0, 10, 4);
-    // Sweater (Indigo)
-    workerGfx.fillStyle(0x6366f1, 1);
-    workerGfx.fillRect(3, 10, 10, 10);
-    workerGfx.generateTexture('worker-character', 16, 24);
-    workerGfx.destroy();
-
-    // 10. DLQ Depot (46x42)
-    const dlqGfx = this.make.graphics({ x: 0, y: 0 });
-    dlqGfx.fillStyle(0x450a0a, 1);
-    dlqGfx.fillRect(4, 10, 38, 28);
-    dlqGfx.fillStyle(0xdc2626, 1);
-    dlqGfx.fillRect(8, 14, 30, 8);
-    // Hazard Stripes
-    dlqGfx.fillStyle(0xfef08a, 1);
-    dlqGfx.fillRect(12, 16, 4, 4);
-    dlqGfx.fillRect(22, 16, 4, 4);
-    dlqGfx.fillRect(32, 16, 4, 4);
-    dlqGfx.generateTexture('dlq-depot', 46, 42);
-    dlqGfx.destroy();
-
-    // 11. Normal Parcel (12x12 isometric box)
-    const pGfx = this.make.graphics({ x: 0, y: 0 });
-    pGfx.fillStyle(0x38bdf8, 1);
-    pGfx.fillRect(1, 1, 10, 10);
-    pGfx.fillStyle(0x0284c7, 1);
-    pGfx.fillRect(5, 1, 2, 10);
-    pGfx.fillRect(1, 5, 10, 2);
-    pGfx.generateTexture('parcel', 12, 12);
-    pGfx.destroy();
-
-    // 12. DLQ Poison Parcel (12x12)
-    const pDlqGfx = this.make.graphics({ x: 0, y: 0 });
-    pDlqGfx.fillStyle(0xef4444, 1);
-    pDlqGfx.fillRect(1, 1, 10, 10);
-    pDlqGfx.fillStyle(0x7f1d1d, 1);
-    pDlqGfx.fillRect(5, 1, 2, 10);
-    pDlqGfx.fillRect(1, 5, 10, 2);
-    pDlqGfx.generateTexture('parcel-dlq', 12, 12);
-    pDlqGfx.destroy();
-
-    // 13. ACK Sparkle (8x8)
-    const spkGfx = this.make.graphics({ x: 0, y: 0 });
-    spkGfx.fillStyle(0x34d399, 1);
-    spkGfx.fillRect(3, 0, 2, 8);
-    spkGfx.fillRect(0, 3, 8, 2);
-    spkGfx.fillStyle(0xa7f3d0, 1);
-    spkGfx.fillRect(2, 2, 4, 4);
-    spkGfx.generateTexture('ack-sparkle', 8, 8);
-    spkGfx.destroy();
   }
 }

@@ -48,8 +48,16 @@ export interface BrokerSnapshot {
   totalBacklog: number;
 }
 
+export interface LiveEventItem {
+  id: number;
+  time: string;
+  type: 'publish' | 'route' | 'consume' | 'nack';
+  message: string;
+  orderId?: string;
+}
+
 export interface InspectedEntity {
-  type: 'publisher' | 'exchange' | 'queue' | 'consumer' | 'dlq';
+  type: 'publisher' | 'exchange' | 'queue' | 'consumer' | 'dlq' | 'mascot';
   title: string;
   data: Record<string, string | number | boolean>;
 }
