@@ -1,4 +1,4 @@
-import { Component, inject } from '@angular/core';
+import { Component, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { SimulationService } from '../../core/services/simulation.service';
 import { SimulationTrafficMode } from '../../core/models/broker.model';
@@ -11,7 +11,7 @@ import { SimulationTrafficMode } from '../../core/models/broker.model';
     <aside class="control-panel">
       <!-- Traffic Presets -->
       <div class="panel-section">
-        <span class="section-title">Traffic Scenario</span>
+        <span class="section-title">Telemetry Mode</span>
         <div class="button-group">
           <button
             (click)="selectPreset('DemoQuiet')"
@@ -38,6 +38,29 @@ import { SimulationTrafficMode } from '../../core/models/broker.model';
             🚨 Error DLQ
           </button>
         </div>
+        <button
+          class="live-mode-btn"
+          (click)="selectPreset('LiveMetrics')"
+          [class.active]="simulation.mode() === 'LiveMetrics'"
+          title="Connect to actual local RabbitMQ broker">
+          📡 Live RabbitMQ Broker
+        </button>
+      </div>
+
+      <!-- Live Broker Actions (Visible when in Live Mode or backend active) -->
+      <div class="panel-section live-actions">
+        <span class="section-title">Live Actions</span>
+        <div class="button-group">
+          <button class="action-btn" (click)="onSetupQueues()" [disabled]="actionPending()">
+            🛠️ Create Queues
+          </button>
+          <button class="action-btn publish-btn" (click)="onPublishMessage()" [disabled]="actionPending()">
+            ✉️ Send Msg
+          </button>
+        </div>
+        @if (actionStatus()) {
+          <div class="action-feedback">{{ actionStatus() }}</div>
+        }
       </div>
 
       <!-- Playback & Speed -->
@@ -81,7 +104,7 @@ import { SimulationTrafficMode } from '../../core/models/broker.model';
       display: flex;
       flex-direction: column;
       gap: 12px;
-      background: rgba(15, 23, 42, 0.9);
+      background: rgba(15, 23, 42, 0.92);
       backdrop-filter: blur(10px);
       padding: 16px;
       border-radius: 10px;
@@ -90,7 +113,7 @@ import { SimulationTrafficMode } from '../../core/models/broker.model';
       font-family: system-ui, -apple-system, sans-serif;
       box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
       z-index: 100;
-      width: 290px;
+      width: 300px;
       user-select: none;
     }
 
@@ -128,10 +151,15 @@ import { SimulationTrafficMode } from '../../core/models/broker.model';
       white-space: nowrap;
     }
 
-    button:hover {
+    button:hover:not(:disabled) {
       background: rgba(51, 65, 85, 0.9);
       color: #ffffff;
       border-color: #64748b;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
     }
 
     button.active {
@@ -142,10 +170,42 @@ import { SimulationTrafficMode } from '../../core/models/broker.model';
       box-shadow: 0 0 10px rgba(56, 189, 248, 0.4);
     }
 
+    button.live-mode-btn {
+      width: 100%;
+      margin-top: 4px;
+      background: rgba(16, 185, 129, 0.15);
+      border-color: rgba(16, 185, 129, 0.4);
+      color: #34d399;
+    }
+
+    button.live-mode-btn.active {
+      background: #059669;
+      border-color: #34d399;
+      color: #ffffff;
+      box-shadow: 0 0 12px rgba(52, 211, 153, 0.5);
+    }
+
+    button.publish-btn {
+      background: rgba(245, 158, 11, 0.2);
+      border-color: rgba(245, 158, 11, 0.5);
+      color: #fbbf24;
+    }
+
+    button.publish-btn:hover:not(:disabled) {
+      background: #d97706;
+      color: #ffffff;
+    }
+
     button.paused {
       background: #e11d48;
       border-color: #fb7185;
       color: #ffffff;
+    }
+
+    .action-feedback {
+      font-size: 11px;
+      color: #38bdf8;
+      font-style: italic;
     }
 
     .hint-box {
@@ -159,8 +219,28 @@ import { SimulationTrafficMode } from '../../core/models/broker.model';
 })
 export class ToolbarComponent {
   simulation = inject(SimulationService);
+  actionPending = signal(false);
+  actionStatus = signal('');
 
   selectPreset(mode: SimulationTrafficMode) {
     this.simulation.setMode(mode);
+  }
+
+  async onSetupQueues() {
+    this.actionPending.set(true);
+    this.actionStatus.set('Declaring demo queues in RabbitMQ...');
+    const ok = await this.simulation.setupDemoQueues();
+    this.actionStatus.set(ok ? 'Queues created in RabbitMQ!' : 'Failed. Ensure backend is running.');
+    this.actionPending.set(false);
+    setTimeout(() => this.actionStatus.set(''), 3000);
+  }
+
+  async onPublishMessage() {
+    this.actionPending.set(true);
+    this.actionStatus.set('Publishing message to orders.checkout...');
+    const ok = await this.simulation.injectTestMessage();
+    this.actionStatus.set(ok ? 'Message published successfully!' : 'Failed. Ensure backend is running.');
+    this.actionPending.set(false);
+    setTimeout(() => this.actionStatus.set(''), 3000);
   }
 }

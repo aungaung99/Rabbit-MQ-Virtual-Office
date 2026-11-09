@@ -3,6 +3,7 @@ import { CommonModule } from '@angular/common';
 import * as Phaser from 'phaser';
 import { OfficeScene } from './game/scenes/office.scene';
 import { SimulationService } from './core/services/simulation.service';
+import { SignalRService } from './core/services/signalr.service';
 import { HudComponent } from './features/hud/hud.component';
 import { ToolbarComponent } from './features/controls/toolbar.component';
 import { InspectorModalComponent } from './features/inspector/inspector-modal.component';
@@ -18,6 +19,8 @@ export class App implements OnInit, OnDestroy {
   @ViewChild('gameContainer', { static: true }) gameContainerRef!: ElementRef<HTMLDivElement>;
 
   simulation = inject(SimulationService);
+  signalR = inject(SignalRService);
+
   private phaserGame: Phaser.Game | null = null;
   private officeScene: OfficeScene | null = null;
 
@@ -31,13 +34,24 @@ export class App implements OnInit, OnDestroy {
         this.officeScene.updateSnapshot(snap, speed, paused);
       }
     });
+
+    // Reactive sync from SignalR live snapshots to simulation service
+    effect(() => {
+      const liveSnap = this.signalR.liveSnapshot();
+      if (liveSnap) {
+        this.simulation.applyLiveSnapshot(liveSnap);
+      }
+    });
   }
 
   ngOnInit() {
     this.initPhaser();
+    // Attempt connecting to live backend SignalR hub
+    this.signalR.connect('http://localhost:5000/hubs/monitoring');
   }
 
   ngOnDestroy() {
+    this.signalR.disconnect();
     if (this.phaserGame) {
       this.phaserGame.destroy(true);
       this.phaserGame = null;
@@ -64,7 +78,6 @@ export class App implements OnInit, OnDestroy {
 
     this.phaserGame = new Phaser.Game(config);
 
-    // Pass initial data once scene starts
     this.phaserGame.events.once('ready', () => {
       this.officeScene?.init({
         snapshot: this.simulation.snapshot(),

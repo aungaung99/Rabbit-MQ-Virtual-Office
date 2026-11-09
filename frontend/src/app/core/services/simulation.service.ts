@@ -10,6 +10,7 @@ export class SimulationService {
   readonly simulationSpeed = signal<number>(1.0);
   readonly isPaused = signal<boolean>(false);
   readonly inspectedEntity = signal<InspectedEntity | null>(null);
+  readonly isLiveConnected = signal<boolean>(false);
 
   // Computed convenience signals
   readonly totalBacklog = computed(() => this.snapshot().totalBacklog);
@@ -25,7 +26,16 @@ export class SimulationService {
 
   setMode(newMode: SimulationTrafficMode) {
     this.mode.set(newMode);
-    this.snapshot.set(this.createSnapshot(newMode));
+    if (newMode !== 'LiveMetrics') {
+      this.snapshot.set(this.createSnapshot(newMode));
+    }
+  }
+
+  applyLiveSnapshot(liveSnapshot: BrokerSnapshot) {
+    this.isLiveConnected.set(true);
+    if (this.mode() === 'LiveMetrics') {
+      this.snapshot.set(liveSnapshot);
+    }
   }
 
   setSpeed(speed: number) {
@@ -40,14 +50,37 @@ export class SimulationService {
     this.inspectedEntity.set(entity);
   }
 
+  async injectTestMessage(): Promise<boolean> {
+    try {
+      const res = await fetch('http://localhost:5000/api/rabbitmq/publish-test', {
+        method: 'POST'
+      });
+      return res.ok;
+    } catch (e) {
+      console.warn('Backend not reachable for publish-test:', e);
+      return false;
+    }
+  }
+
+  async setupDemoQueues(): Promise<boolean> {
+    try {
+      const res = await fetch('http://localhost:5000/api/rabbitmq/setup-demo-queues', {
+        method: 'POST'
+      });
+      return res.ok;
+    } catch (e) {
+      console.warn('Backend not reachable for setup-demo-queues:', e);
+      return false;
+    }
+  }
+
   private startSimulationLoop() {
     this.timer = setInterval(() => {
-      if (this.isPaused()) return;
+      if (this.isPaused() || this.mode() === 'LiveMetrics') return;
       this.tickCount++;
       const current = this.snapshot();
       const currentMode = this.mode();
       
-      // Update with small deterministic jitter
       const jitter = Math.sin(this.tickCount * 0.5) * (currentMode === 'DemoSpike' ? 8 : 1.2);
       const pubRate = Math.max(1, Math.round((current.totalPublishRate + jitter) * 10) / 10);
       
@@ -91,7 +124,7 @@ export class SimulationService {
     } else if (mode === 'DemoErrorSpike') {
       pubRate = 32.0;
       delivRate = 28.0;
-      ackRate = 4.5; // low ACK, mostly NACK/DLQ
+      ackRate = 4.5;
       backlog = 65;
       consumersCount = 2;
     }
